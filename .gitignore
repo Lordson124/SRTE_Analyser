@@ -1,0 +1,6 @@
+# PyInstaller build folders and executables
+build/
+dist/
+*.spec
+__pycache__/
+.streamlit/ # Streamlit's local cache, usually not needed in repo
