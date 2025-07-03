@@ -1,10 +1,10 @@
 import pandas as pd
 import numpy as np
 import re
-from collections import Counter # New import for counting
+from collections import Counter
+from textblob import TextBlob # New import for sentiment analysis
 
 # List of common "empty" comment indicators (case-insensitive)
-# This will be used to filter out non-meaningful comments
 EMPTY_COMMENT_PATTERNS = re.compile(
     r'^(nan|nil|none|nothing|nill|n/a|n/c|noting else|nun)$',
     re.IGNORECASE
@@ -18,7 +18,6 @@ def _clean_single_comment(comment_text):
     comment_text = str(comment_text).strip() # Ensure it's a string and strip whitespace
 
     # If the comment is just a number (e.g., '0', '1', '2'), treat as empty
-    # This prevents integers from being passed as comments
     if comment_text.isdigit():
         return ''
 
@@ -82,65 +81,92 @@ def cleanitup(x):
                 g.append(str(r).strip()) # Only strip, no capitalize
     return g
 
-def get_aggregated_comments(comment_list):
+def analyze_sentiment(text, polarity_override=None): # Added polarity_override for average sentiment
     """
-    Aggregates similar comments, counts their occurrences, and formats them.
-    Preserves original casing for display, but aggregates case-insensitively.
+    Analyzes the sentiment of a given text or uses an override polarity.
+    Returns a tuple: (polarity, sentiment_category)
+    Polarity: -1.0 (negative) to +1.0 (positive)
+    Sentiment_category: 'Positive', 'Negative', 'Neutral'
     """
-    # Dictionary to store counts and a canonical (first seen) version of each comment
+    if polarity_override is not None:
+        polarity = polarity_override
+    else:
+        analysis = TextBlob(text)
+        polarity = analysis.sentiment.polarity
+
+    if polarity > 0.1: # Slightly positive threshold
+        category = 'Positive'
+    elif polarity < -0.1: # Slightly negative threshold
+        category = 'Negative'
+    else:
+        category = 'Neutral'
+    return polarity, category
+
+def get_aggregated_comments_with_sentiment(comment_list):
+    """
+    Aggregates similar comments, counts their occurrences, and formats them,
+    including sentiment analysis.
+    Returns a list of (formatted_comment_string, polarity, category) tuples.
+    """
+    # Dictionary to store counts, original comment text, and sentiment
     # Key: normalized comment (lowercase, stripped)
-    # Value: [count, original_comment_text]
+    # Value: [count, original_comment_text, total_polarity, num_comments_for_avg_polarity]
     aggregated = {}
 
     for comment in comment_list:
-        # Normalize for counting (case-insensitive comparison)
-        normalized_comment = comment.lower() 
+        normalized_comment = comment.lower()
+        polarity, _ = analyze_sentiment(comment) # Get sentiment for each individual comment
+
         if normalized_comment in aggregated:
             aggregated[normalized_comment][0] += 1
+            aggregated[normalized_comment][2] += polarity # Sum polarities for average
+            aggregated[normalized_comment][3] += 1
         else:
-            # Store count and the original comment text (preserving casing)
-            aggregated[normalized_comment] = [1, comment] 
+            aggregated[normalized_comment] = [1, comment, polarity, 1]
 
-    # Convert to a list of (original_comment, count) tuples
+    # Convert to a list of (original_comment, count, avg_polarity, avg_category) tuples
     # Sort by count (descending), then by original comment text (alphabetical, case-insensitive)
-    sorted_comments = sorted(
-        [ (v[1], v[0]) for k, v in aggregated.items() ],
-        key=lambda item: (-item[1], item[0].lower()) 
+    sorted_comments_with_sentiment = []
+    for k, v in aggregated.items():
+        count, original_text, total_polarity, num_comments = v
+        avg_polarity = total_polarity / num_comments
+        _, avg_category = analyze_sentiment(original_text, avg_polarity) # Use avg_polarity to get category
+        sorted_comments_with_sentiment.append((original_text, count, avg_polarity, avg_category))
+
+    sorted_comments_with_sentiment = sorted(
+        sorted_comments_with_sentiment,
+        key=lambda item: (-item[1], item[0].lower()) # Sort by count desc, then text asc
     )
 
-    # Format for display: "Comment (xN)" or "Comment"
-    formatted_comments = []
-    for comment_text, count in sorted_comments:
+    # Format for display: "Comment (xN) - Sentiment"
+    formatted_output = []
+    for comment_text, count, _, category in sorted_comments_with_sentiment:
         if count > 1:
-            formatted_comments.append(f"{comment_text} (x{count})")
+            formatted_output.append(f"{comment_text} (x{count}) - {category}")
         else:
-            formatted_comments.append(comment_text)
-    return formatted_comments
-
+            formatted_output.append(f"{comment_text} - {category}")
+            
+    return formatted_output, [s[2] for s in sorted_comments_with_sentiment] # Return formatted comments and list of polarities
 
 def extract_series(df, name):
     """Extracts comments from a DataFrame series and saves them to a text file."""
-    # Note: cleanitup is used here, which does not capitalize.
     np.savetxt(f'./Comments/{name}.txt', cleanitup(get_series(df)), fmt='%s', delimiter='\n')
     print(f'Comments for {name} successfully extracted...')
      
 def extract_df(df, name, col):
     """Extracts comments from DataFrame columns and saves them to a text file."""
-    # Note: cleanitup is used here, which does not capitalize.
     np.savetxt(f'./Comments/{name}.txt', cleanitup(get_comments(df, col)), fmt='%s', delimiter='\n')
     print(f'Comments for {name} successfully extracted...')
 
 def extract_likes(df, filter_course):
-    """Extracts 'likes' comments for a filtered course and aggregates them."""
-    likes_column = df.columns[2] # Assumes 'Course likes' is at index 2
-    # Pass a copy to avoid SettingWithCopyWarning
-    cleaned_comments = get_comments(filter_course.copy(), [likes_column]) 
-    return get_aggregated_comments(cleaned_comments)
+    """Extracts 'likes' comments for a filtered course and aggregates them with sentiment."""
+    likes_column = df.columns[2]
+    cleaned_comments = get_comments(filter_course.copy(), [likes_column])
+    return get_aggregated_comments_with_sentiment(cleaned_comments)
 
 def extract_dislikes(df, filter_course):
-    """Extracts 'dislikes' comments for a filtered course and aggregates them."""
-    dislikes_column = df.columns[3] # Assumes 'Course dislikes' is at index 3
-    # Pass a copy to avoid SettingWithCopyWarning
-    cleaned_comments = get_comments(filter_course.copy(), [dislikes_column]) 
-    return get_aggregated_comments(cleaned_comments)
+    """Extracts 'dislikes' comments for a filtered course and aggregates them with sentiment."""
+    dislikes_column = df.columns[3]
+    cleaned_comments = get_comments(filter_course.copy(), [dislikes_column])
+    return get_aggregated_comments_with_sentiment(cleaned_comments)
 
