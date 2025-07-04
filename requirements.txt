@@ -2,3 +2,6 @@ pandas
 streamlit
 fpdf2
 openpyxl
+Pillow
+numpy
+textblob
