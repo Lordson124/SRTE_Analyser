@@ -1,4 +1,4 @@
 pandas
 streamlit
-fpdf
+fpdf2
 openpyxl
